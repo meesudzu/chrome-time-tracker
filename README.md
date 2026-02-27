@@ -55,3 +55,33 @@ Values are in **seconds**.
 - Manual sync via popup button
 - Day boundary sync at midnight
 - Offline queue with retry
+
+## Auto-Publish to Chrome Web Store
+
+A GitHub Actions workflow auto-publishes when you push a version tag.
+
+### One-Time Setup
+
+1. **Pay the $5 developer fee** at [Chrome Web Store Developer Dashboard](https://chrome.google.com/webstore/devconsole)
+2. **Manually upload the first version** via the dashboard
+3. **Get API credentials** — follow [Google's guide](https://developer.chrome.com/docs/webstore/using-api):
+   - Create an OAuth client in Google Cloud Console
+   - Get `client_id`, `client_secret`, and `refresh_token`
+4. **Add GitHub Secrets** to your repo (`Settings → Secrets → Actions`):
+
+   | Secret | Value |
+   |--------|-------|
+   | `CHROME_EXTENSION_ID` | Your extension ID from the Chrome Web Store |
+   | `CHROME_CLIENT_ID` | Google API OAuth client ID |
+   | `CHROME_CLIENT_SECRET` | Google API OAuth client secret |
+   | `CHROME_REFRESH_TOKEN` | Google API OAuth refresh token |
+
+### Publishing a New Version
+
+```bash
+git add -A && git commit -m "v1.0.1"
+git tag v1.0.1
+git push && git push --tags
+```
+
+The workflow will automatically zip, upload, and publish to the Chrome Web Store.
