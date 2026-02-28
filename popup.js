@@ -67,33 +67,27 @@ async function init() {
   const token = await getToken();
   const user = await getUser();
 
-  if (token && user) {
+  // Check if there's an active device flow
+  chrome.runtime.sendMessage({ type: 'GET_DEVICE_FLOW_STATUS' }, (flowState) => {
+    if (flowState && flowState.status === 'pending') {
+      showDeviceCodeScreen(flowState.userCode, flowState.verificationUri);
+      startPollingFlowStatus();
+      return;
+    }
+    if (flowState && flowState.status === 'success') {
+      chrome.runtime.sendMessage({ type: 'CLEAR_DEVICE_FLOW' }, async () => {
+        const freshUser = await getUser();
+        showDashboard(freshUser);
+      });
+      return;
+    }
+    if (flowState && flowState.status === 'error') {
+      chrome.runtime.sendMessage({ type: 'CLEAR_DEVICE_FLOW' });
+    }
+
+    // Always show dashboard — works with or without login
     showDashboard(user);
-  } else {
-    // Check if there's an active device flow running in the background
-    chrome.runtime.sendMessage({ type: 'GET_DEVICE_FLOW_STATUS' }, (flowState) => {
-      if (flowState && flowState.status === 'pending') {
-        // Resume showing the device code screen
-        showDeviceCodeScreen(flowState.userCode, flowState.verificationUri);
-        startPollingFlowStatus();
-      } else if (flowState && flowState.status === 'success') {
-        // Flow completed while popup was closed — show dashboard
-        chrome.runtime.sendMessage({ type: 'CLEAR_DEVICE_FLOW' }, async () => {
-          const user = await getUser();
-          if (user) showDashboard(user);
-          else showScreen(screenLogin);
-        });
-      } else if (flowState && flowState.status === 'error') {
-        showScreen(screenLogin);
-        const errorEl = document.getElementById('login-error');
-        errorEl.textContent = flowState.error || 'Login failed. Try again.';
-        errorEl.classList.remove('hidden');
-        chrome.runtime.sendMessage({ type: 'CLEAR_DEVICE_FLOW' });
-      } else {
-        showScreen(screenLogin);
-      }
-    });
-  }
+  });
 
   setupEventListeners();
 }
@@ -175,8 +169,24 @@ function startLogin() {
 
 async function showDashboard(user) {
   showScreen(screenDashboard);
-  document.getElementById('user-avatar').src = user.avatar_url;
-  document.getElementById('user-name').textContent = user.login;
+
+  const userAvatar = document.getElementById('user-avatar');
+  const userName = document.getElementById('user-name');
+  const loginBtn = document.getElementById('btn-logout');
+
+  if (user) {
+    userAvatar.src = user.avatar_url;
+    userAvatar.style.display = '';
+    userName.textContent = user.login;
+    loginBtn.textContent = 'Logout';
+    loginBtn.onclick = async () => { await logout(); showDashboard(null); };
+  } else {
+    userAvatar.style.display = 'none';
+    userName.textContent = 'Not logged in';
+    loginBtn.textContent = 'Login';
+    loginBtn.onclick = () => startLogin();
+  }
+
   await loadDayData();
 }
 
@@ -193,18 +203,23 @@ async function loadDayData() {
       }
     });
   } else {
-    document.getElementById('total-time').textContent = '—';
-    document.getElementById('domain-list').innerHTML = `
-      <div class="empty-state">
-        <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" opacity="0.4">
-          <rect x="3" y="4" width="18" height="18" rx="2" ry="2"/>
-          <line x1="16" y1="2" x2="16" y2="6"/>
-          <line x1="8" y1="2" x2="8" y2="6"/>
-          <line x1="3" y1="10" x2="21" y2="10"/>
-        </svg>
-        <p>Historical data is stored in your GitHub Gist. Click "View Gist" below.</p>
-      </div>
-    `;
+    // Load historical data from local storage
+    chrome.runtime.sendMessage({ type: 'GET_LOCAL_DATA', date: viewDateStr }, (response) => {
+      if (response && response.domains) {
+        renderDomains(response.domains);
+      } else {
+        document.getElementById('total-time').textContent = '—';
+        document.getElementById('domain-list').innerHTML = `
+          <div class="empty-state">
+            <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" opacity="0.4">
+              <circle cx="12" cy="12" r="10"/>
+              <path d="M12 6v6l4 2"/>
+            </svg>
+            <p>No data for this day.</p>
+          </div>
+        `;
+      }
+    });
   }
 }
 
@@ -292,21 +307,15 @@ function setupEventListeners() {
     showScreen(screenLogin);
   });
 
-  // Logout
-  document.getElementById('btn-logout').addEventListener('click', async () => {
-    await logout();
-    showScreen(screenLogin);
-  });
+  // Logout is handled dynamically in showDashboard()
 
   // Settings
   document.getElementById('btn-settings').addEventListener('click', () => showScreen(screenSettings));
 
   // Back from settings
   document.getElementById('btn-back').addEventListener('click', async () => {
-    const token = await getToken();
     const user = await getUser();
-    if (token && user) showDashboard(user);
-    else showScreen(screenLogin);
+    showDashboard(user);
   });
 
   // Sync

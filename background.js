@@ -113,34 +113,54 @@ async function detectActiveTab() {
 }
 
 /**
- * Finalize a day's data and sync to Gist
+ * Save a day's data to local monthly storage (same format as Gist)
+ * Key: local_monthly_YYYY-MM → { "YYYY-MM-DD": { "domain.com": seconds, ... }, ... }
+ */
+async function saveToLocalMonthly(dateStr, domains) {
+  if (!domains || Object.keys(domains).length === 0) return;
+  const month = dateStr.substring(0, 7); // "YYYY-MM"
+  const key = `local_monthly_${month}`;
+  const data = await chrome.storage.local.get(key);
+  const monthly = data[key] || {};
+  monthly[dateStr] = domains;
+  await chrome.storage.local.set({ [key]: monthly });
+
+  // Track which months have unsynced data
+  const unsyncedData = await chrome.storage.local.get('unsynced_months');
+  const unsynced = new Set(unsyncedData.unsynced_months || []);
+  unsynced.add(month);
+  await chrome.storage.local.set({ unsynced_months: [...unsynced] });
+}
+
+/**
+ * Get local monthly data
+ */
+async function getLocalMonthlyData(month) {
+  const key = `local_monthly_${month}`;
+  const data = await chrome.storage.local.get(key);
+  return data[key] || null;
+}
+
+/**
+ * Finalize a day's data — always save locally, sync to Gist if logged in
  */
 async function finalizeDayAndSync(dateStr, domains) {
   if (!domains || Object.keys(domains).length === 0) return;
 
+  // Always save locally first
+  await saveToLocalMonthly(dateStr, domains);
+
+  // Try to sync if logged in
   const token = await getToken();
-  if (!token) {
-    // Not logged in, store for later sync
-    const pending = (await chrome.storage.local.get('pending_syncs')).pending_syncs || {};
-    pending[dateStr] = domains;
-    await chrome.storage.local.set({ pending_syncs: pending });
-    return;
-  }
-
-  try {
-    await forceSetDayData(dateStr, domains);
-    await chrome.storage.local.set({ last_sync_date: dateStr, last_sync_time: Date.now() });
-
-    // Clear from pending if it was there
-    const pending = (await chrome.storage.local.get('pending_syncs')).pending_syncs || {};
-    delete pending[dateStr];
-    await chrome.storage.local.set({ pending_syncs: pending });
-  } catch (err) {
-    console.error('Failed to sync to Gist:', err);
-    // Store for retry
-    const pending = (await chrome.storage.local.get('pending_syncs')).pending_syncs || {};
-    pending[dateStr] = domains;
-    await chrome.storage.local.set({ pending_syncs: pending });
+  if (token) {
+    try {
+      await forceSetDayData(dateStr, domains);
+      await chrome.storage.local.set({ last_sync_date: dateStr, last_sync_time: Date.now() });
+      // Mark this month as synced (remove from unsynced if all days synced)
+    } catch (err) {
+      console.error('Failed to sync to Gist:', err);
+      // Data is safe locally, will retry later
+    }
   }
 }
 
@@ -154,16 +174,22 @@ async function syncToday() {
   await flushActiveTime();
 
   const token = await getToken();
-  if (!token) return { success: false, message: 'Not logged in' };
+  if (!token) {
+    // Still save locally even if not logged in
+    const freshData = await chrome.storage.local.get('tracking_today');
+    await saveToLocalMonthly(freshData.tracking_today.date, freshData.tracking_today.domains);
+    return { success: true, message: 'Saved locally (not logged in)' };
+  }
 
   try {
     // Re-read after flush
     const freshData = await chrome.storage.local.get('tracking_today');
+    await saveToLocalMonthly(freshData.tracking_today.date, freshData.tracking_today.domains);
     const result = await forceSetDayData(freshData.tracking_today.date, freshData.tracking_today.domains);
     await chrome.storage.local.set({ last_sync_time: Date.now() });
 
-    // Also sync any pending days
-    await syncPending();
+    // Sync all unsynced local months to Gist
+    await syncAllLocal();
 
     return { success: true, message: 'Synced successfully', gistUrl: result.gistUrl };
   } catch (err) {
@@ -172,19 +198,29 @@ async function syncToday() {
 }
 
 /**
- * Sync any pending (un-synced) days
+ * Sync all local monthly data to Gist (called after login or periodically)
  */
-async function syncPending() {
-  const pending = (await chrome.storage.local.get('pending_syncs')).pending_syncs || {};
-  for (const [dateStr, domains] of Object.entries(pending)) {
-    try {
-      await forceSetDayData(dateStr, domains);
-      delete pending[dateStr];
-    } catch {
-      // Will retry next time
+async function syncAllLocal() {
+  const unsyncedData = await chrome.storage.local.get('unsynced_months');
+  const unsynced = unsyncedData.unsynced_months || [];
+
+  for (const month of unsynced) {
+    const monthlyData = await getLocalMonthlyData(month);
+    if (!monthlyData) continue;
+
+    for (const [dateStr, domains] of Object.entries(monthlyData)) {
+      try {
+        await forceSetDayData(dateStr, domains);
+      } catch {
+        // Will retry next time
+        return;
+      }
     }
   }
-  await chrome.storage.local.set({ pending_syncs: pending });
+
+  // Clear unsynced list after successful sync
+  await chrome.storage.local.set({ unsynced_months: [] });
+  await chrome.storage.local.set({ last_sync_time: Date.now() });
 }
 
 // ─── Event Listeners ─────────────────────────────────────────────────
@@ -324,13 +360,25 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === 'GET_STATUS') {
     (async () => {
       const data = await chrome.storage.local.get([
-        'tracking_today', 'tracking_active', 'last_sync_time', 'pending_syncs'
+        'tracking_today', 'tracking_active', 'last_sync_time', 'unsynced_months'
       ]);
       sendResponse({
         today: data.tracking_today || { date: getTodayStr(), domains: {} },
         active: data.tracking_active || null,
         lastSyncTime: data.last_sync_time || null,
-        pendingCount: Object.keys(data.pending_syncs || {}).length
+        unsyncedMonths: data.unsynced_months || []
+      });
+    })();
+    return true;
+  }
+
+  if (message.type === 'GET_LOCAL_DATA') {
+    (async () => {
+      const dateStr = message.date;
+      const month = dateStr.substring(0, 7);
+      const monthlyData = await getLocalMonthlyData(month);
+      sendResponse({
+        domains: monthlyData && monthlyData[dateStr] ? monthlyData[dateStr] : null
       });
     })();
     return true;
@@ -374,7 +422,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             }
           );
 
-          // Success! Update status
+          // Success! Sync all local data to Gist
+          try { await syncAllLocal(); } catch { /* will retry */ }
+
           await chrome.storage.local.set({
             device_flow: { status: 'success', user: result.user }
           });
