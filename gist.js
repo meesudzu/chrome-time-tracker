@@ -200,7 +200,19 @@ export async function forceSetDayData(dateStr, dayData) {
     }
   }
 
-  monthlyData[dateStr] = dayData;
+  // Merge: take the higher value per domain (supports multi-device)
+  const existing = monthlyData[dateStr] || {};
+  const merged = { ...existing };
+  for (const [domain, seconds] of Object.entries(dayData)) {
+    merged[domain] = Math.max(merged[domain] || 0, seconds);
+  }
+
+  // Skip update if data hasn't changed
+  if (JSON.stringify(monthlyData[dateStr]) === JSON.stringify(merged)) {
+    return { created: false, gistUrl: fullGist.html_url, skipped: true };
+  }
+
+  monthlyData[dateStr] = merged;
   await updateGist(gist.id, filename, monthlyData);
   return { created: false, gistUrl: fullGist.html_url };
 }

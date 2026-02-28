@@ -1,7 +1,7 @@
 // background.js — Service Worker for time tracking
 
 import { getToken, startDeviceFlow, pollForToken } from './auth.js';
-import { forceSetDayData } from './gist.js';
+import { forceSetDayData, getMonthData } from './gist.js';
 
 // ─── Constants ───────────────────────────────────────────────────────
 const TICK_ALARM = 'time-tracker-tick';
@@ -376,10 +376,31 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     (async () => {
       const dateStr = message.date;
       const month = dateStr.substring(0, 7);
+
+      // Try local storage first
       const monthlyData = await getLocalMonthlyData(month);
-      sendResponse({
-        domains: monthlyData && monthlyData[dateStr] ? monthlyData[dateStr] : null
-      });
+      if (monthlyData && monthlyData[dateStr]) {
+        sendResponse({ domains: monthlyData[dateStr] });
+        return;
+      }
+
+      // Fall back to Gist if logged in
+      const token = await getToken();
+      if (token) {
+        try {
+          const gistData = await getMonthData(month);
+          if (gistData && gistData[dateStr]) {
+            // Cache it locally for next time
+            await saveToLocalMonthly(dateStr, gistData[dateStr]);
+            sendResponse({ domains: gistData[dateStr] });
+            return;
+          }
+        } catch {
+          // Gist read failed, return null
+        }
+      }
+
+      sendResponse({ domains: null });
     })();
     return true;
   }
