@@ -11,7 +11,7 @@ A Chrome extension that tracks your browsing time per domain and syncs daily log
 - 😴 **Idle Detection** — Pauses tracking when you're away (>2 min)
 - 📊 **Visual Dashboard** — Dark-themed popup with progress bars and favicons
 
-## Setup
+## Setup Local
 
 ### 1. Load the Extension
 
