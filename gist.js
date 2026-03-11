@@ -186,7 +186,7 @@ export async function forceSetDayData(dateStr, dayData) {
   if (!gist) {
     const content = { [dateStr]: dayData };
     gist = await createGist(filename, content);
-    return { created: true, gistUrl: gist.html_url };
+    return { created: true, gistUrl: gist.html_url, mergedData: dayData };
   }
 
   const fullGist = await getFullGist(gist.id);
@@ -209,12 +209,12 @@ export async function forceSetDayData(dateStr, dayData) {
 
   // Skip update if data hasn't changed
   if (JSON.stringify(monthlyData[dateStr]) === JSON.stringify(merged)) {
-    return { created: false, gistUrl: fullGist.html_url, skipped: true };
+    return { created: false, gistUrl: fullGist.html_url, skipped: true, mergedData: merged };
   }
 
   monthlyData[dateStr] = merged;
   await updateGist(gist.id, filename, monthlyData);
-  return { created: false, gistUrl: fullGist.html_url };
+  return { created: false, gistUrl: fullGist.html_url, mergedData: merged };
 }
 
 /**

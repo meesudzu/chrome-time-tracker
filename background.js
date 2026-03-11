@@ -169,12 +169,13 @@ async function finalizeDayAndSync(dateStr, domains) {
  */
 async function syncToday() {
   const tracking = await getTodayData();
-  if (Object.keys(tracking.domains).length === 0) return { success: true, message: 'No data to sync' };
 
   await flushActiveTime();
 
   const token = await getToken();
   if (!token) {
+    if (Object.keys(tracking.domains).length === 0) return { success: true, message: 'No data to sync' };
+
     // Still save locally even if not logged in
     const freshData = await chrome.storage.local.get('tracking_today');
     await saveToLocalMonthly(freshData.tracking_today.date, freshData.tracking_today.domains);
@@ -184,8 +185,15 @@ async function syncToday() {
   try {
     // Re-read after flush
     const freshData = await chrome.storage.local.get('tracking_today');
-    await saveToLocalMonthly(freshData.tracking_today.date, freshData.tracking_today.domains);
     const result = await forceSetDayData(freshData.tracking_today.date, freshData.tracking_today.domains);
+
+    // Merge remote data down to local
+    if (result.mergedData) {
+      freshData.tracking_today.domains = result.mergedData;
+      await chrome.storage.local.set({ tracking_today: freshData.tracking_today });
+    }
+
+    await saveToLocalMonthly(freshData.tracking_today.date, freshData.tracking_today.domains);
     await chrome.storage.local.set({ last_sync_time: Date.now() });
 
     // Sync all unsynced local months to Gist
@@ -443,8 +451,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             }
           );
 
-          // Success! Sync all local data to Gist
-          try { await syncAllLocal(); } catch { /* will retry */ }
+          // Success! Sync all local data to Gist, and pull today's remote data
+          try { 
+            await syncAllLocal(); 
+            await syncToday();
+          } catch { /* will retry */ }
 
           await chrome.storage.local.set({
             device_flow: { status: 'success', user: result.user }
